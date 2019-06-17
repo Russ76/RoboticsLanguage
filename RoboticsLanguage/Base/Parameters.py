@@ -27,11 +27,19 @@ parameters = {
     'globals': {
         'version': False,
         'output': 'RosCpp',
+        'input': '',
         'debug': False,
         'compile': False,
         'launch': False,
         'beautify': False,
+        'beautifyEngine': '',
+        'edit': False,
+        'editor': '',
         'verbose': 'none',
+        'deployOutputs': {
+            'RosCpp': os.path.expanduser('~') + '/catkin_ws/src/',
+            'Ros2Cpp': os.path.expanduser('~') + '/ros2_ws/src/'
+        },
         'deploy': os.path.expanduser('~') + '/deploy/',
         'plugins': os.path.expanduser('~') + '/.rol/plugins/',
         'RoboticsLanguagePath': os.path.abspath(os.path.dirname(__file__) + '/../') + '/',
@@ -63,7 +71,14 @@ parameters = {
         'progressBar': 0,
         'progressTotal': 10,
         'progressPercentage': 0,
-        'progressStartTime': 0
+        'progressStartTime': 0,
+        'showOutputDependency': False,
+        'makeConfigurationFile': False,
+        'copyExamplesHere': False,
+        'runTests': False,
+        'coverage': False,
+        'coverageFolder': os.path.expanduser('~') + '/.rol/coverage',
+        'makeExamples': False,
     },
 
     'symbols':
@@ -74,6 +89,9 @@ parameters = {
     },
 
     'errors': [],
+
+    'parsing': {'position':0,
+                'grammars':{}},
 
     'Information':
     {
@@ -105,6 +123,7 @@ parameters = {
             'author': {'name': 'name', 'email': 'email@email.edu'},
             'url': 'url',
             'license': 'license',
+            'longLicense': 'longLicense',
             'copyright': 'copyright',
             'year': 'year'
         }
@@ -123,36 +142,49 @@ command_line_flags = {
         'fileNotNeeded': True,
         'description': 'Shows information about a specific packages'
     },
+    'developer:showOutputDependency': {
+        'noArgument': True,
+        'longFlag': 'show-output-dependencies',
+        'fileNotNeeded': True,
+        'description': 'Shows output package dependencies'
+    },
+    'developer:makeConfigurationFile': {
+        'noArgument': True,
+        'longFlag': 'make-configuration-file',
+        'fileNotNeeded': True,
+        'description': 'Makes a configuration parameters file'
+    },
     'developer:code': {
         'noArgument': True,
-        'flag':'x',
+        'flag': 'x',
         'longFlag': 'show-code',
         'description': 'Prints the internal XML representation of the code'
     },
     'developer:codePath': {
-        'flag':'X',
+        'flag': 'X',
         'longFlag': 'show-code-path',
         'description': 'Prints the internal XML representation of the code for a specific path'
     },
     'developer:parameters': {
-        'flag':'p',
+        'flag': 'p',
         'longFlag': 'show-parameters',
         'noArgument': True,
         'fileNotNeeded': True,
         'description': 'Prints the internal parameters'
     },
     'developer:parametersPath': {
-        'flag':'P',
+        'flag': 'P',
         'longFlag': 'show-parameters-path',
         'fileNotNeeded': True,
         'description': 'Prints the internal parameters for a specific path'
     },
     'developer:step': {
-        'flag':'s',
+        'flag': 's',
         'longFlag': 'show-step',
         'description': 'Prints parameters or code for a specific compiler step'
     },
     'developer:stop': {
+        'flag': 'S',
         'longFlag': 'show-stop',
         'noArgument': True,
         'description': 'Stops the compiler after the step defined by \'--show-step\''
@@ -177,6 +209,35 @@ command_line_flags = {
         'noArgument': True,
         'description': 'Shows progress.'
     },
+    'developer:copyExamplesHere': {
+        'longFlag': 'copy-examples-here',
+        'noArgument': True,
+        'fileNotNeeded': True,
+        'description': 'Copies a set of examples into the current folder'
+    },
+    'developer:runTests': {
+        'longFlag': 'run-tests',
+        'noArgument': True,
+        'fileNotNeeded': True,
+        'description': 'Runs unit tests for compiler and plugins'
+    },
+    'developer:coverage': {
+        'longFlag': 'coverage',
+        'noArgument': True,
+        'fileNotNeeded': True,
+        'description': 'Runs coverage together with the unit tests for compiler and plugins'
+    },
+    'developer:coverageFolder': {
+        'longFlag': 'coverage-folder',
+        'fileNotNeeded': True,
+        'description': 'Folder where coverage report is saved'
+    },
+    'developer:makeExamples': {
+        'longFlag': 'make-examples',
+        'noArgument': True,
+        'fileNotNeeded': True,
+        'description': 'Makes all examples in plugins'
+    },
     'globals:version': {
         'longFlag': 'version',
         'noArgument': True,
@@ -189,6 +250,12 @@ command_line_flags = {
         'description': 'Outputs',
         'choices': [],
         'numberArguments': '*'
+    },
+    'globals:input': {
+        'flag': 'i',
+        'longFlag': 'input',
+        'description': 'Use a specific input parser',
+        'choices': []
     },
     'globals:debug': {
         'flag': 'd',
@@ -220,11 +287,36 @@ command_line_flags = {
         'noArgument': True,
         'description': 'Launches the output generated by all modules'
     },
+    'globals:edit': {
+        'flag': 'e',
+        'longFlag': 'edit',
+        'noArgument': True,
+        'description': 'Opens the output code generated on the chosen editor'
+    },
+    'globals:editor': {
+        'flag': 'E',
+        'longFlag': 'use-editor',
+        'description': 'Chooses editor'
+    },
+    'globals:beautifyEngine': {
+        'flag': 'B',
+        'longFlag': 'use-beautifier',
+        'description': 'Chooses beautifier engine'
+    },
     'globals:deploy': {
         'longFlag': 'deploy-path',
-        'description': 'The path where the generated code is saved'
+        'description': 'The generic path where the generated code is saved'
+    },
+    'globals:deployOutputs:RosCpp': {
+        'longFlag': 'deploy-ros-cpp-path',
+        'description': 'The path where the generated ROS code is saved'
+    },
+    'globals:deployOutputs:Ros2Cpp': {
+        'longFlag': 'deploy-ros-2-cpp-path',
+        'description': 'The path where the generated ROS 2 code is saved'
     },
     'globals:removeCache': {
+        'flag': 'r',
         'longFlag': 'remove-cache',
         'noArgument': True,
         'fileNotNeeded': True,
@@ -259,6 +351,8 @@ command_line_flags = {
     'globals:loadOrder': {'suppress': True},
     'globals:skipCopyFiles': {'suppress': True},
     'globals:skipTemplateFiles': {'suppress': True},
+    'parsing:position': {'suppress': True},
+    'parsing:grammars': {'suppress': True},
     'symbols:functions': {'suppress': True},
     'symbols:variables': {'suppress': True},
     'symbols:types': {'suppress': True},

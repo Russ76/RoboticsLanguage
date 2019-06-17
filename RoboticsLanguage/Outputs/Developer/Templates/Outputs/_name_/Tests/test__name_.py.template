@@ -8,9 +8,11 @@
 #      Licence: {{parameters.Information.software.license}}
 #    Copyright: {{parameters.Information.software.copyright}}
 #
+#   {{parameters.Information.software.longLicense|wordwrap(wrapstring='\n#   ')}}
+#
 
 import unittest
-from RoboticsLanguage.{{parameters.Outputs.Developer.Info.type}}.{{parameters.Outputs.Developer.Info.name|camelCase}} import Transform
+from RoboticsLanguage.{{parameters.Outputs.Developer.Info.type}}.{{parameters.Outputs.Developer.Info.name|camelCase}} import Output
 
 class Test{{parameters.Outputs.Developer.Info.name|camelCase}}(unittest.TestCase):
 

@@ -1,35 +1,63 @@
+#
+#   This is the Robotics Language compiler
+#
+#   Template.py: Jinja2 template tools
+#
+#   Created on: June 22, 2017
+#       Author: Gabriel A. D. Lopes
+#      Licence: Apache 2.0
+#    Copyright: 2014-2018 Robot Care Systems BV, The Hague, The Netherlands. All rights reserved.
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
 import os
-from shutil import copy
+from pygments import highlight
 from RoboticsLanguage.Base import Utilities
+from pygments.lexers import get_lexer_for_filename
+from pygments.formatters import Terminal256Formatter
 from jinja2 import Environment, FileSystemLoader, TemplateError
-
-default_templates_path = 'Templates'
-
-default_ignore_files = {'.DS_Store'}
 
 default_file_patterns = {}
 
-default_template_engine_filters = {'todaysDate': Utilities.todaysDate,
+default_ignore_files = {'.DS_Store'}
+
+default_template_engine_filters = {'tag': Utilities.tag,
+                                   'text': Utilities.text,
                                    'dpath': Utilities.path,
                                    'xpath': Utilities.xpath,
                                    'dpaths': Utilities.paths,
                                    'xpaths': Utilities.xpaths,
-                                   'children': Utilities.children,
                                    'parent': Utilities.parent,
-                                   'isDefined': Utilities.isDefined,
-                                   'ensureList': Utilities.ensureList,
-                                   'text': Utilities.text,
-                                   'tag': Utilities.tag,
                                    'unique': Utilities.unique,
-                                   'attributes': Utilities.attributes,
-                                   'attribute': Utilities.attribute,
                                    'option': Utilities.option,
-                                   'optionalArguments': Utilities.optionalArguments,
+                                   'dashes': Utilities.dashes,
+                                   'children': Utilities.children,
                                    'initials': Utilities.initials,
-                                   'underscore': Utilities.underscore,
                                    'fullCaps': Utilities.fullCaps,
+                                   'isDefined': Utilities.isDefined,
+                                   'attribute': Utilities.attribute,
                                    'camelCase': Utilities.camelCase,
-                                   'underscoreFullCaps': Utilities.underscoreFullCaps}
+                                   'todaysDate': Utilities.todaysDate,
+                                   'ensureList': Utilities.ensureList,
+                                   'attributes': Utilities.attributes,
+                                   'underscore': Utilities.underscore,
+                                   'unCamelCase': Utilities.unCamelCase,
+                                   'textWrapBox': Utilities.textWrapBox,
+                                   'mergeManyOrdered': Utilities.mergeManyOrdered,
+                                   'optionalArguments': Utilities.optionalArguments,
+                                   'underscoreFullCaps': Utilities.underscoreFullCaps,
+                                   'sortListCodeByAttribute': Utilities.sortListCodeByAttribute,
+                                   'split': lambda x, y: x.split(y)
+                                   }
 
 delimeters = {'block_start_string': '<%%',
               'block_end_string': '%%>',
@@ -50,26 +78,31 @@ def templateEngine(code, parameters, output=None,
                    ignore_files=default_ignore_files,
                    file_patterns=default_file_patterns,
                    filters=default_template_engine_filters,
-                   templates_path=default_templates_path,
+                   templates_path=None,
                    deploy_path=None):
   '''The template engine combines multiple template files from different modules to generate code.'''
 
+  # check if the output is specified or use parameters
   if output is None:
     output = parameters['developer']['stepName']
 
+  # check the deploy folder for the code generated
   if deploy_path is None:
-    deploy_path = parameters['globals']['deploy']
+    if parameters['developer']['stepName'] in parameters['globals']['deployOutputs'].keys():
+      deploy_path = parameters['globals']['deployOutputs'][parameters['developer']['stepName']]
+    else:
+      deploy_path = parameters['globals']['deploy']
 
-  if not os.path.isdir(templates_path):
-    templates_path = parameters['manifesto'][parameters['developer']['stepGroup']][parameters['developer']['stepName']]['path'] + '/' + templates_path
+  # check for package dependencies
+  package_parents = Utilities.getPackageOutputParents(parameters, output)
 
-    # templates_path = '/'.join([parameters['globals']['RoboticsLanguagePath'],
-    #                            parameters['developer']['stepGroup'],
-    #                            parameters['developer']['stepName'],
-    #                            templates_path])
-    # @TODO give warning
-    # if not os.path.isdir(templates_path):
-    #   Tools.Exceptions(...)
+  # look for all the templates
+  if templates_path is None:
+    templates_paths = [parameters['manifesto'][parameters['developer']['stepGroup']][x]['path'] + '/Templates' for x in reversed(package_parents)]
+
+  else:
+    templates_paths = [templates_path]
+
 
   transformers = [x.split('.')[-1] for x in filter(lambda x: 'Transformers' in x, parameters['globals']['loadOrder'])]
 
@@ -77,31 +110,35 @@ def templateEngine(code, parameters, output=None,
   files_to_copy = []
   new_files_to_copy = []
 
-  # find all the files in the output template folder
-  for root, dirs, files in os.walk(templates_path):
-    for file in files:
-      if file.endswith(".template"):
+  # find all the files in the output template folder, including templates from dependencies
+  for templates_path in templates_paths:
+    for root, dirs, files in os.walk(templates_path):
+      for file in files:
+        if file.endswith(".template"):
 
-        # extracts full and relative paths
-        file_full_path = os.path.join(root, file)
-        file_relative_path = Utilities.replaceFirst(file_full_path, templates_path, '')
-        file_deploy_path = Utilities.replaceLast(Utilities.replaceFirst(file_full_path, templates_path, deploy_path), '.template', '')
+          # extracts full and relative paths
+          file_full_path = os.path.join(root, file)
+          permissions = os.stat(file_full_path)
+          file_relative_path = Utilities.replaceFirst(file_full_path, templates_path, '')
+          file_deploy_path = Utilities.replaceLast(Utilities.replaceFirst(file_full_path, templates_path, deploy_path), '.template', '')
 
-        # apply file template names
-        for key, value in file_patterns.iteritems():
-          file_deploy_path = file_deploy_path.replace('_' + key + '_', value)
+          # apply file template names
+          for key, value in file_patterns.iteritems():
+            file_deploy_path = file_deploy_path.replace('_' + key + '_', value)
 
-        # save it
-        files_to_process[file_relative_path] = {
-            'full_path': file_full_path,
-            'deploy_path': file_deploy_path,
-            'includes': [], 'header': '', 'elements': []}
-      else:
-        # just copy the files
-        if file not in default_ignore_files:
-          copy_file_name = os.path.join(root, file)
-          files_to_copy.append(copy_file_name)
-          new_files_to_copy.append(Utilities.replaceFirst(copy_file_name, templates_path, deploy_path))
+          # save it
+          files_to_process[file_relative_path] = {
+              'permissions': permissions,
+              'full_path': file_full_path,
+              'deploy_path': file_deploy_path,
+              'includes': [], 'header': [], 'elements': []}
+        else:
+          # just copy the files
+          if file not in default_ignore_files:
+            copy_file_name = os.path.join(root, file)
+            files_to_copy.append(copy_file_name)
+            new_files_to_copy.append(Utilities.replaceFirst(copy_file_name, templates_path, deploy_path))
+
 
   # find all the non template files in the transformers template folder
   for element in parameters['globals']['loadOrder']:
@@ -111,14 +148,18 @@ def templateEngine(code, parameters, output=None,
       else:
         path = parameters['globals']['plugins']
 
-      transformer_path = path + '/' + '/'.join(element.split('.')[1:]) + '/Templates/Outputs/' + output
 
-      for root, dirs, files in os.walk(transformer_path):
-        for file in files:
-          if not file.endswith(".template") and file not in default_ignore_files:
-            copy_file_name = os.path.join(root, file)
-            files_to_copy.append(copy_file_name)
-            new_files_to_copy.append(Utilities.replaceFirst(copy_file_name, transformer_path, deploy_path))
+
+      for output_parent in reversed(package_parents):
+
+        transformer_path = path + '/' + '/'.join(element.split('.')[1:]) + '/Templates/Outputs/' + output_parent
+
+        for root, dirs, files in os.walk(transformer_path):
+          for file in files:
+            if not file.endswith(".template") and file not in default_ignore_files:
+              copy_file_name = os.path.join(root, file)
+              files_to_copy.append(copy_file_name)
+              new_files_to_copy.append(Utilities.replaceFirst(copy_file_name, transformer_path, deploy_path))
 
   # rename files acording to file pattern names
   for key, value in file_patterns.iteritems():
@@ -126,21 +167,37 @@ def templateEngine(code, parameters, output=None,
       new_files_to_copy[i] = new_files_to_copy[i].replace('_' + key + '_', value)
 
   # search for the same file in transformers plugins to include as plugins
-  for file in files_to_process.keys():
-    for module in transformers:
-      if os.path.isfile(path + 'Transformers/' + module + '/Templates/Outputs/' + output + '/' + file):
-        # save the include name
-        files_to_process[file]['includes'].append(module)
+  for parent_output in reversed(package_parents):
+    for file in files_to_process.keys():
+      for module in transformers:
+        if os.path.isfile(path + 'Transformers/' + module + '/Templates/Outputs/' + parent_output + '/' + file):
 
-        # fill in the include header for Jinja2
-        files_to_process[file]['header'] += "{{% import '{}' as Include{} with context %}}\n".format(
-            path + 'Transformers/' + module + '/Templates/Outputs/' + output + file, module)
+          # remove templates for parent outputs if a child template exists
+          if package_parents.index(parent_output) < len(package_parents)-1:
+            parent = package_parents[1+package_parents.index(parent_output)]
 
-        # prepare the text to fill in the spots where includes happen
-        files_to_process[file]['elements'].append("{{{{Include" + module + ".{}}}}}")
+            header_parent = "{{% import '{}' as Include{} with context %}}\n".format(
+                path + 'Transformers/' + module + '/Templates/Outputs/' + parent + file, module)
 
-    # after all modules create a grouping function for fill in includes
-    files_to_process[file]['group_function'] = createGroupFunction(files_to_process[file]['elements'])
+            if header_parent in files_to_process[file]['header']:
+              files_to_process[file]['header'].remove(header_parent)
+
+          # save the include name
+          if module not in files_to_process[file]['includes']:
+            files_to_process[file]['includes'].append(module)
+
+          # fill in the include header for Jinja2
+          files_to_process[file]['header'].append( "{{% import '{}' as Include{} with context %}}\n".format(
+              path + 'Transformers/' + module + '/Templates/Outputs/' + parent_output + file, module))
+
+          # prepare the text to fill in the spots where includes happen
+          elements_text = "{{{{Include" + module + ".{}}}}}"
+          if elements_text not in files_to_process[file]['elements']:
+            files_to_process[file]['elements'].append(elements_text)
+
+      # after all modules create a grouping function for fill in includes
+      files_to_process[file]['group_function'] = createGroupFunction(files_to_process[file]['elements'])
+
 
   # all the data is now ready, time to apply templates
   for file in files_to_process.keys():
@@ -158,16 +215,32 @@ def templateEngine(code, parameters, output=None,
         template = environment.get_template(files_to_process[file]['full_path'])
 
         # render it
-        render = template.render(header=files_to_process[file]['header'])
+        render = template.render(header=''.join(files_to_process[file]['header']))
 
         # debug
         if parameters['developer']['intermediateTemplates']:
-          print '====== File: ' + file + ' -> ' + files_to_process[file]['deploy_path'] + ' ==========================='
-          print render
-          print '============================================================'
+          if not parameters['globals']['noColours']:
+            print Utilities.color.BOLD
+            print Utilities.color.YELLOW
+          print '=============================================================================='
+          print 'File: ' + file
+          print 'Full path:' + files_to_process[file]['full_path']
+          print 'Deploy path:' + files_to_process[file]['deploy_path']
+          print '------------------------------------------------------------------------------'
+          if not parameters['globals']['noColours']:
+            print Utilities.color.END
+            try:
+              print(highlight(render, get_lexer_for_filename(files_to_process[file]['deploy_path']),Terminal256Formatter(style=Terminal256Formatter().style)))
+            except:
+              print(render)
+          else:
+            print(render)
 
         # create a new environment that includes all the plugin template code
-        preprocessed_environment = Environment(loader=FileSystemLoader('/'), trim_blocks=True, lstrip_blocks=True)
+        preprocessed_environment = Environment(loader=FileSystemLoader('/'), trim_blocks=True, lstrip_blocks=True, finalize=lambda x: x if x is not None else '')
+
+        # add filter that collects serialized code for this output
+        filters['serializedCode'] = lambda x: Utilities.allAttribute(x, output)
 
         # add filters to environment
         preprocessed_environment.filters.update(filters)
@@ -175,10 +248,14 @@ def templateEngine(code, parameters, output=None,
         # create a new template that includes all the plugin template code
         preprocessed_template = preprocessed_environment.from_string(render)
 
+        # add some simpler information about the current output package and its parents
+        parameters['this'] = parameters['developer']['stepName']
+        parameters['this_parents'] = package_parents
+
         # render the combined template
         result = preprocessed_template.render(code=code, parameters=parameters)
       except TemplateError as e:
-        Utilities.logger.error(e.__repr__())
+        Utilities.logging.error(e.__repr__())
         #   # with Error.exception(parameters, filename=files_to_process[i])
         # Utilities.logErrors(Utilities.formatJinjaErrorMessage(
         #     e, filename=files_to_process[file]['full_path']), parameters)
@@ -189,10 +266,13 @@ def templateEngine(code, parameters, output=None,
         Utilities.createFolderForFile(files_to_process[file]['deploy_path'])
 
         # write files
-        new_package_file = open(files_to_process[file]['deploy_path'], 'w')
-        new_package_file.write(result)
-        new_package_file.close()
-        Utilities.logging.debug('Wrote file ' + files_to_process[file]['deploy_path'] + ' ...')
+        with open(files_to_process[file]['deploy_path'], 'w') as new_package_file:
+          new_package_file.write(result)
+
+        # apply permissions
+        os.chmod(files_to_process[file]['deploy_path'], files_to_process[file]['permissions'].st_mode)
+
+        Utilities.logging.debug(files_to_process[file]['full_path'] + ' -> ' + files_to_process[file]['deploy_path'] + ' ...')
 
       except OSError as e:
         # with Error.exception(parameters, stop=True)
@@ -210,7 +290,7 @@ def templateEngine(code, parameters, output=None,
         Utilities.createFolderForFile(new_files_to_copy[i])
 
         # copy files
-        copy(files_to_copy[i], new_files_to_copy[i])
+        Utilities.copyWithPermissions(files_to_copy[i], new_files_to_copy[i])
         Utilities.logging.debug('Copied file ' + new_files_to_copy[i] + '...')
 
       except OSError as e:

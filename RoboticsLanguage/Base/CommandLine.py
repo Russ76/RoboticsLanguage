@@ -23,9 +23,12 @@
 import os
 import sys
 import yaml
+import glob
+import shutil
 import argparse
 import dpath.util
 import argcomplete
+from copy import copy
 from . import Utilities
 from . import Parameters
 
@@ -92,6 +95,7 @@ def prepareCommandLineArguments(parameters):
 
   # remember the available choices for outputs
   Parameters.command_line_flags['globals:output']['choices'] = parameters['manifesto']['Outputs'].keys()
+  Parameters.command_line_flags['globals:input']['choices'] = parameters['manifesto']['Inputs'].keys()
 
   # create a subset of all the parameters
   subset = dict((x, parameters[x])
@@ -184,16 +188,16 @@ def processFileParameters(args, file_formats, parameters):
 
   # return an error if files are unknown
   if len(unknown_files) > 0:
-    Utilities.logger.error('the following files have unknown formal: ' + str(unknown_files))
+    Utilities.logging.error('the following files have unknown formal: ' + str(unknown_files))
     sys.exit(1)
 
   if len(rol_files) == 0 and parameters['globals']['fileNeeded']:
-    Utilities.logger.error('no Robotics Language files detected!')
+    Utilities.logging.error('no Robotics Language files detected!')
     sys.exit(1)
     # @TODO: implement multiple file support
   elif len(rol_files) > 1:
     # @BUG if two files are repeated the message is displayed
-    Utilities.logger.warn('the following files are disregarded:\n' + '\n'.join([x['name'] for x in rol_files[1:]]))
+    Utilities.logging.warn('the following files are disregarded:\n' + '\n'.join([x['name'] for x in rol_files[1:]]))
 
   # @NOTE: this is loading all YAML files for all the ROL files supplied in the command line. This is meant for
   # a later implementation that supports for processing multiple rol files simultaneously. Must separate local
@@ -239,7 +243,7 @@ def processCommandLineParameters(args, file_formats, parameters):
   # 4. list of yaml files passed as arguments
   # 5. command line parameters
   for parameter_file in parameter_files:
-    parameters = Utilities.mergeDictionaries(yaml.load(parameter_file['file']), parameters)
+    parameters = Utilities.mergeDictionaries(yaml.safe_load(parameter_file['file']), parameters)
 
   # merge the command line flags
   parameters = Utilities.mergeDictionaries(command_line_parameters, parameters)
@@ -251,14 +255,26 @@ def processCommandLineParameters(args, file_formats, parameters):
   # remove filename key
   parameters.pop('filename', None)
 
+  parameters['globals']['output'] = Utilities.ensureList(parameters['globals']['output'])
+
   # Set the total number of plugins being processed
   parameters['developer']['progressTotal'] = 1 + \
-      len(parameters['manifesto']['Transformers']) + len(Utilities.ensureList(parameters['globals']['output']))
+      len(parameters['manifesto']['Transformers']) + len(parameters['globals']['output'])
 
   if len(rol_files) == 0:
-    return None, None, Utilities.ensureList(parameters['globals']['output']), parameters
+    return None, None, parameters
   else:
-    return rol_files[0]['name'], rol_files[0]['type'], Utilities.ensureList(parameters['globals']['output']), parameters
+    return rol_files[0]['name'], rol_files[0]['type'], parameters
+
+
+# @NOTE for speed should we `try/catch` or check first?
+def getTemplateTextForOutputPackage(parameters, keyword, package):
+  if package in parameters['language'][keyword]['output'].keys():
+    return parameters['language'][keyword]['output'][package], package
+  elif 'parent' in parameters['manifesto']['Outputs'][package].keys():
+    return getTemplateTextForOutputPackage(parameters, keyword, parameters['manifesto']['Outputs'][package]['parent'])
+  else:
+    raise
 
 
 def loadRemainingParameters(parameters):
@@ -291,7 +307,7 @@ def loadRemainingParameters(parameters):
       if name_split[1] == 'Outputs':
         default_output[name_split[2]] = language_module.default_output
     except Exception as e:
-      Utilities.logger.debug(e.__repr__())
+      Utilities.logging.debug(e.__repr__())
       pass
 
     # The messages
@@ -301,7 +317,7 @@ def loadRemainingParameters(parameters):
       # append messages definitions
       messages = Utilities.mergeDictionaries(messages, messages_module.messages)
     except Exception as e:
-      Utilities.logger.debug(e.__repr__())
+      Utilities.logging.debug(e.__repr__())
       pass
 
     # The error handling functions
@@ -314,7 +330,7 @@ def loadRemainingParameters(parameters):
       # append error exceptions definitions
       error_exceptions = Utilities.mergeDictionaries(error_exceptions, error_module.error_exception_functions)
     except Exception as e:
-      Utilities.logger.debug(e.__repr__())
+      Utilities.logging.debug(e.__repr__())
       pass
 
   # add package language definitions
@@ -341,21 +357,32 @@ def loadRemainingParameters(parameters):
       parameters['language'][keyword]['output'] = {}
 
     parameters['language'][keyword]['defaultOutput'] = []
+    parameters['language'][keyword]['inheritedOutput'] = []
     for item in missing:
       # fill in the missing output
-      parameters['language'][keyword]['output'][item] = default_output[item]
-      # log that the default output is being used
-      parameters['language'][keyword]['defaultOutput'].append(item)
+
+      try:
+        parameters['language'][keyword]['output'][item], inherited_package = getTemplateTextForOutputPackage(parameters, keyword, item)
+
+        # log that the inherited output is being used
+        parameters['language'][keyword]['inheritedOutput'].append({item: inherited_package})
+      except:
+        parameters['language'][keyword]['output'][item] = default_output[item]
+
+        # log that the default output is being used
+        parameters['language'][keyword]['defaultOutput'].append(item)
 
   return parameters
 
 
 def postCommandLineParser(parameters):
 
+  # Version
   if parameters['globals']['version']:
     import pkg_resources
     print('The Robotics Language version: ' + pkg_resources.get_distribution('RoboticsLanguage').version)
 
+  # Package information
   if parameters['developer']['info']:
     import pkg_resources
     print('The Robotics Language version: ' + pkg_resources.get_distribution('RoboticsLanguage').version)
@@ -365,6 +392,7 @@ def postCommandLineParser(parameters):
         extra = ' *' if parameters['globals']['plugins'] in content['path'] else ''
         print '  ' + item + ' (' + content['version'] + ')' + extra
 
+  # Detailed Package information
   if parameters['developer']['infoPackage'] != '':
     for type in ['Inputs', 'Transformers', 'Outputs']:
       if parameters['developer']['infoPackage'] in parameters['manifesto'][type].keys():
@@ -375,12 +403,108 @@ def postCommandLineParser(parameters):
         print('Information:')
         Utilities.printParameters(package['information'])
 
+  # generate configuration script
+  if parameters['developer']['makeConfigurationFile']:
+    data = parameters['command_line_flags']
+    filtered = filter(lambda x: x[0:11] == 'Information' or 'suppress' not in data[x].keys() or data[x]['suppress'] is not True, data.iterkeys())
+    commands = {x: dpath.util.get(parameters, x.replace(':', '/')) for x in filtered}
+    commands_dictionary = Utilities.unflatDictionary(commands, ':')
+    commands_dictionary['developer']['makeConfigurationFile'] = False
 
+    try:
+      Utilities.createFolder(os.path.expanduser('~/.rol'))
+      if os.path.isfile(os.path.expanduser('~/.rol/parameters.yaml')):
+        with open(os.path.expanduser('~/.rol/parameters.yaml.template'), 'w') as output:
+          yaml.dump(commands_dictionary, output, default_flow_style=False)
+        print 'Created the file "~/.rol/parameters.yaml.template".'
+        print 'Please modify this file and rename it to "~/.rol/parameters.yaml"'
+      else:
+        with open(os.path.expanduser('~/.rol/parameters.yaml'), 'w') as output:
+          yaml.dump(commands_dictionary, output, default_flow_style=False)
+        print 'Created the file "~/.rol/parameters.yaml".'
+    except Exception as e:
+      print 'Error creating configuration file!'
+      print e
+
+  # Outputs dependency
+  if parameters['developer']['showOutputDependency']:
+    for package in parameters['manifesto']['Outputs']:
+      if 'parent' in parameters['manifesto']['Outputs'][package].keys():
+        print parameters['manifesto']['Outputs'][package]['parent'] + ' <- ' + package
+
+  # Copy examples here
+  if parameters['developer']['copyExamplesHere']:
+    from_path = parameters['globals']['RoboticsLanguagePath'] + 'Examples'
+    here_path = os.getcwd()
+
+    # copytree workaround to ignore existing folders and maintain folder structure. slightly adjusted from here:
+    # https://stackoverflow.com/questions/1868714/how-do-i-copy-an-entire-directory-of-files-into-an-existing-directory-using-pyth
+    for item in os.listdir(from_path):
+      s = os.path.join(from_path, item)
+      d = os.path.join(here_path, item)
+      if os.path.isdir(s):
+        shutil.copytree(s, d)
+      else:
+        shutil.copy2(s, d)
+
+  # Unit testing
+  if parameters['developer']['runTests']:
+    from unittest import defaultTestLoader, TextTestRunner
+    import coverage
+
+    # save the parameters into a file to pass to the unit tests
+    import cloudpickle
+    with open('/tmp/parameters.pickle', 'wb') as file:
+      cloudpickle.dump(parameters, file)
+
+    # coverage
+    if parameters['developer']['coverage']:
+      cov = coverage.Coverage(omit=['*/lib/python*', '*Tests/test_*', '*__init__.py'])
+      cov.start()
+
+    # look for all the tests and run them
+    suite = defaultTestLoader.discover(parameters['globals']['RoboticsLanguagePath'], 'test_*.py')
+    TextTestRunner(verbosity=2).run(suite)
+
+    # coverage
+    if parameters['developer']['coverage']:
+      cov.stop()
+      cov.save()
+      cov.html_report(directory=parameters['developer']['coverageFolder'], ignore_errors=True)
+      print('Coverage report is: ' + parameters['developer']['coverageFolder'] + '/index.html')
+
+    # remove the parameters file
+    os.remove('/tmp/parameters.pickle')
+
+    # done
+    sys.exit(1)
+
+  # make examples
+  if parameters['developer']['makeExamples']:
+    import subprocess
+
+    command_line_arguments = copy(parameters['commandLineParameters'])
+
+    command_line_arguments.remove('--make-examples')
+
+    list_commands = []
+
+    for name in glob.glob(parameters['globals']['RoboticsLanguagePath'] + '/*/*/Examples/*.*'):
+      list_commands.append([command_line_arguments[0], name] + command_line_arguments[1:])
+
+    for command, index in zip(list_commands, range(len(list_commands))):
+      print '[' + str(index + 1) + '/' + str(len(list_commands)) + '] ' + command[1]
+      process = subprocess.Popen(command)
+      process.wait()
+
+    sys.exit(1)
 
   return parameters
 
 
 def ProcessArguments(command_line_parameters, parameters):
+
+  parameters['commandLineParameters'] = command_line_parameters
 
   # load cached command line flags or create if necessary
   flags, arguments, file_package_name, file_formats = prepareCommandLineArguments(parameters)
@@ -393,9 +517,9 @@ def ProcessArguments(command_line_parameters, parameters):
   parameters = loadRemainingParameters(parameters)
 
   # process the parameters
-  file_name, file_type, outputs, parameters = processCommandLineParameters(args, file_formats, parameters)
+  file_name, file_type, parameters = processCommandLineParameters(args, file_formats, parameters)
 
   # processes special generic flags
   parameters = postCommandLineParser(parameters)
 
-  return file_name, file_type, outputs, parameters
+  return file_name, file_type, parameters

@@ -20,6 +20,7 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
+import re
 import os
 import sys
 import time
@@ -28,6 +29,8 @@ import errno
 import pprint
 import hashlib
 import logging
+import inspect
+import textwrap
 import datetime
 import dpath.util
 import coloredlogs
@@ -35,8 +38,8 @@ from lxml import etree
 from funcy import decorator
 from pygments import highlight
 from shutil import copy, rmtree
-from pygments.lexers import PythonLexer, XmlLexer
 from pygments.formatters import Terminal256Formatter
+from pygments.lexers import PythonLexer, XmlLexer, get_lexer_by_name
 from jinja2 import Environment, FileSystemLoader, Template, TemplateSyntaxError, TemplateAssertionError, TemplateError
 
 # -------------------------------------------------------------------------------------------------
@@ -50,6 +53,12 @@ sys.setdefaultencoding('utf-8')
 # -------------------------------------------------------------------------------------------------
 #  Helping functions
 # -------------------------------------------------------------------------------------------------
+
+def printSource(text, language, parameters=None, style='monokai'):
+  if parameters is not None and parameters['globals']['noColours']:
+    print(text)
+  else:
+    print(highlight(text, get_lexer_by_name(language), Terminal256Formatter(style=Terminal256Formatter().style)))
 
 
 def printCode(code, parameters=None, style='monokai'):
@@ -74,6 +83,13 @@ def printParameters(elements, parameters=None, style='monokai'):
   else:
     print(highlight(pprint.pformat(elements), PythonLexer(),
                     Terminal256Formatter(style=Terminal256Formatter(style=style).style)))
+
+
+def printVariable(x):
+  frame = inspect.currentframe().f_back
+  s = inspect.getframeinfo(frame).code_context[0]
+  r = re.search(r"\((.*)\)", s).group(1)
+  print("{} = {}".format(r, x))
 
 
 # -------------------------------------------------------------------------------------------------
@@ -202,7 +218,7 @@ def errorOptionalArgumentTypes(code, parameters, optional_names, optional_types)
           parameters['language'][code.tag]['definition']['optional'][name]['documentation'] + \
           '" instead of "' + types + '"\n'
   # show error
-  logger.error(formatSemanticTypeErrorMessage(
+  logging.error(formatSemanticTypeErrorMessage(
       parameters['text'], parameters, getTextMinimumPositionXML(code), 'Type', message))
 
 
@@ -216,7 +232,7 @@ def errorOptionalArgumentNotDefined(code, parameters, optional_names):
 
   message += 'The list of defined optional parameters is: ' + str(keys)
 
-  logger.error(formatSemanticTypeErrorMessage(
+  logging.error(formatSemanticTypeErrorMessage(
       parameters['text'], parameters, getTextMinimumPositionXML(code), 'Type', message))
 
 
@@ -228,7 +244,7 @@ def errorArgumentTypes(code, parameters, argument_types):
   message += '\nInstead received:\n   ' + code.tag + \
       '( ' + ','.join(argument_types) + ' )\n'
 
-  logger.error(formatSemanticTypeErrorMessage(
+  logging.error(formatSemanticTypeErrorMessage(
       parameters['text'], parameters, getTextMinimumPositionXML(code), 'Type', message))
 
 
@@ -236,7 +252,7 @@ def errorLanguageDefinition(code, parameters):
   message = 'Language element "' + code.tag + \
       '" ill defined. Please check definition.'
 
-  logger.error(formatSemanticTypeErrorMessage(
+  logging.error(formatSemanticTypeErrorMessage(
       parameters['text'], parameters, getTextMinimumPositionXML(code), 'Type', message))
 
 
@@ -315,20 +331,16 @@ def cache_function(function):
 # -------------------------------------------------------------------------------------------------
 
 
-# Create a logger object.
-logger = logging.getLogger(__name__)
-coloredlogs.install(fmt='%(levelname)s: %(message)s')
-coloredlogs.install(level='WARN')
-
 # install colours in the logger
+coloredlogs.install(fmt='%(levelname)s: %(message)s', level='WARN')
 
 
+# set the logger level
 def setLoggerLevel(level):
-  coloredlogs.install(level=level.upper())
+  coloredlogs.install(fmt='%(levelname)s: %(message)s', level=level.upper())
+
 
 # command line codes for colors
-
-
 class color:
   PURPLE = '\033[95m'
   CYAN = '\033[96m'
@@ -349,7 +361,7 @@ def incrementCompilerStep(parameters, group, name):
   parameters['developer']['stepName'] = name
 
   # log the current step
-  logger.info(
+  logging.info(
       'Step [' + str(parameters['developer']['stepCounter']) + "]: " + group + " - " + name)
 
   return parameters
@@ -385,6 +397,16 @@ def progressDone(parameters):
   sys.stdout.flush()
 
 
+def checkQueryNamespaces(text):
+  '''Looks for namespace references in the query text and add them explicitely to xpath'''
+  namespaces = {'namespaces': {}}
+  name = re.split('([a-zA-Z0-9]+):[a-zA-Z0-9]+', text)
+  if name is not None:
+    namespaces['namespaces'] = {value: value for value in name[1::2]}
+
+  return text, namespaces
+
+
 def showDeveloperInformation(code, parameters):
 
   if parameters['developer']['progress']:
@@ -403,9 +425,10 @@ def showDeveloperInformation(code, parameters):
     # show developer information for specific xml code
     if parameters['developer']['codePath'] is not '' and code is not None:
       try:
-        printCode(code.xpath(parameters['developer']['codePath']), parameters)
+        query, namespaces = checkQueryNamespaces(parameters['developer']['codePath'])
+        printCode(code.xpath(query, **namespaces), parameters)
       except:
-        logger.warning(
+        logging.warning(
             "The path'" + parameters['developer']['codePath'] + "' is not present in the code")
 
     # show developer information for specific parameters
@@ -414,7 +437,7 @@ def showDeveloperInformation(code, parameters):
         for element in paths(parameters, parameters['developer']['parametersPath']):
           printParameters(element, parameters)
       except:
-        logger.warning(
+        logging.warning(
             "The path'" + parameters['developer']['parametersPath'] + "' is not defined in the internal parameters.")
 
     if parameters['developer']['stop']:
@@ -432,7 +455,7 @@ def importModule(z, a, b, c):
 
 def removeCache(cache_path='/.rol/cache'):
   global logger
-  logger.debug('Removing caching...')
+  logging.debug('Removing caching...')
   path = os.path.expanduser("~") + cache_path
   if os.path.isdir(path):
     rmtree(path)
@@ -440,6 +463,22 @@ def removeCache(cache_path='/.rol/cache'):
 
 def myPluginPath(parameters):
   return parameters['manifesto'][parameters['developer']['stepGroup']][parameters['developer']['stepName']]['path']
+
+
+def myOutputPath(parameters):
+  if parameters['developer']['stepName'] in parameters['globals']['deployOutputs'].keys():
+    return parameters['globals']['deployOutputs'][parameters['developer']['stepName']]
+  else:
+    return parameters['globals']['deploy']
+
+
+
+def getPackageOutputParents(parameters, package):
+  if 'parent' in parameters['manifesto']['Outputs'][package].keys():
+    return [package] + getPackageOutputParents(parameters, parameters['manifesto']['Outputs'][package]['parent'])
+  else:
+    return [package]
+
 
 # -------------------------------------------------------------------------------------------------
 #  Dictionary utilities
@@ -500,6 +539,10 @@ def paths(dictionary, dictionary_path):
 # -------------------------------------------------------------------------------------------------
 
 
+def textWrapBox(text):
+  return '\\n'.join(textwrap.wrap(text, int(13.9231 - 0.0769231 * len(text) + 0.846154 * len(text.split(' ')))))
+
+
 def replaceLast(string, source, destination):
   return source.join(string.split(source)[0:-1])+destination+string.split(source)[-1]
 
@@ -520,6 +563,10 @@ def underscore(text):
   return text.replace('/', '_').replace(' ', '_').replace('.', '_').lower()
 
 
+def dashes(text):
+  return text.replace('/', '-').replace(' ', '-').replace('.', '-').replace('_', '-').lower()
+
+
 def underscoreFullCaps(text):
   return text.replace('/', '_').replace(' ', '_').replace('.', '_').upper()
 
@@ -536,6 +583,21 @@ def camelCase(text):
   return smartTitle(text.replace('/', ' ').replace('.', ' ').replace('_', ' ')).replace(' ', '')
 
 
+# thanks to https://stackoverflow.com/questions/1175208/elegant-python-function-to-convert-camelcase-to-snake-case
+first_cap_re = re.compile('(.)([A-Z][a-z]+)')
+all_cap_re = re.compile('([a-z0-9])([A-Z])')
+
+
+def camelCaseToUnderscore(name):
+    s1 = first_cap_re.sub(r'\1_\2', name)
+    return all_cap_re.sub(r'\1_\2', s1).lower()
+
+
+def unCamelCase(name):
+    s1 = first_cap_re.sub(r'\1 \2', name)
+    return all_cap_re.sub(r'\1 \2', s1).lower()
+
+
 def initials(text):
   return ''.join(c for c in smartTitle(text) if c.isupper())
 
@@ -543,6 +605,36 @@ def initials(text):
 # -------------------------------------------------------------------------------------------------
 #  List utilities
 # -------------------------------------------------------------------------------------------------
+
+def mergeManyOrdered(list_of_lists):
+  """Non-optimized generalization of mergeOrdered"""
+  return reduce(mergeOrdered, list_of_lists)
+
+
+def mergeOrdered(a, b):
+  """Merges two lists, while keeping the order of the elements and trying to find
+  minimum number of repetitions. E.g.:
+  a = [0,1,3,8,9]
+  b = [1,2,4,5,8,9]
+  mergeOrdered(a, b) -> [0, 1, 2, 4, 5, 3, 8, 9]
+  """
+  c = []
+  while len(a) > 0 and len(b) > 0:
+    if a[0] == b[0]:
+      c.append(a.pop(0))
+      b.pop(0)
+    elif a[0] in b and b[0] not in a:
+      c.append(b.pop(0))
+    elif a[0] not in b and b[0] in a:
+      c.append(a.pop(0))
+    else:
+      if len(a) > len(b):
+        c.append(a.pop(0))
+      else:
+        c.append(b.pop(0))
+
+  return c + a + b
+
 
 def ensureList(a):
   if isinstance(a, list):
@@ -553,6 +645,11 @@ def ensureList(a):
 
 def unique(a):
   return list(set(a))
+
+
+def sortListCodeByAttribute(list, attribute):
+  return sorted(list, key=lambda x: x.attrib[attribute])
+
 
 # -------------------------------------------------------------------------------------------------
 #  File utilities
@@ -589,6 +686,10 @@ def createFolderForFile(filename):
   createFolder(os.path.dirname(filename))
 
 
+def copyWithPermissions(source, destination):
+    permissions = os.stat(source)
+    copy(source, destination)
+    os.chmod(destination, permissions.st_mode)
 # -------------------------------------------------------------------------------------------------
 #  XML utilities used in parsers
 # -------------------------------------------------------------------------------------------------
@@ -651,6 +752,7 @@ def xmlVariable(parameters, name, position=0):
 def xmlMiniLanguage(parameters, key, text, position):
   '''Calls a different parser to process inline mini languages'''
   try:
+    parameters['parsing']['position'] = position
     code, parameters = importModule(parameters['manifesto']['Inputs'][key]['type'], 'Inputs', key, 'Parse').Parse.parse(text, parameters)
     result = etree.tostring(code)
     return result
@@ -711,6 +813,12 @@ def attribute(xml, name):
   except:
     return ''
 
+
+def allAttribute(xml_list, name):
+  if isinstance(xml_list, list):
+    return map(lambda xml: attribute(xml, name), xml_list)
+  else:
+    return attribute(xml_list, name)
 
 def option(xml, name, debug=''):
   try:
@@ -899,62 +1007,62 @@ def templateEngine(code, parameters, filepatterns, templates_path, deploy_path,
     return False
   return True
 
-
-# @WARNING this function does not work on the root node (since it uses the getparent function)
-def serialise(code, parameters, keywords, language, filters=default_template_engine_filters):
-
-  snippet = ''
-
-  try:
-
-    # load keyword template text
-    keyword = keywords[code.tag]['output'][language]
-
-    try:
-      # start the template for this tag
-      template = Template(keyword)
-
-      # load the text filters
-      for key, value in filters.iteritems():
-        template.globals[key] = value
-
-      # get all children that are not 'option'
-      children_elements = code.xpath('*[not(self::option)]')
-
-      # get all children
-      # children_elements = code.getchildren()
-
-      # render tags according to dictionary
-      snippet = template.render(children=map(lambda x: serialise(x, parameters, keywords, language, filters), children_elements),
-                                childrenTags=map(
-          lambda x: x.tag, children_elements),
-          options=dict(zip(code.xpath('option/@name'), map(lambda x: serialise(x,
-                                                                               parameters, keywords, language, filters), code.xpath('option')))),
-          attributes=code.attrib,
-          parentAttributes=code.getparent().attrib,
-          parentTag=code.getparent().tag,
-          text=text(code),
-          tag=code.tag,
-          parameters=parameters,
-          code=code)
-
-      # save text in attribute
-      code.attrib[language] = snippet
-
-    except TemplateError as e:
-      # with Error.exception(parameters)
-      logErrors(formatJinjaErrorMessage(e), parameters)
-
-  except KeyError:
-    # get the line and column numbers
-    line_number, column_number, line = positionToLineColumn(
-        int(code.attrib['p']), parameters['text'])
-
-    # create error message
-    logErrors(errorMessage('Language semantic', 'Keyword \'' + code.tag + '\' not defined',
-                           line_number=line_number, column_number=column_number, line=line), parameters)
-
-  return snippet
+#
+# # @WARNING this function does not work on the root node (since it uses the getparent function)
+# def serialise(code, parameters, keywords, language, filters=default_template_engine_filters):
+#
+#   snippet = ''
+#
+#   try:
+#
+#     # load keyword template text
+#     keyword = keywords[code.tag]['output'][language]
+#
+#     try:
+#       # start the template for this tag
+#       template = Template(keyword)
+#
+#       # load the text filters
+#       for key, value in filters.iteritems():
+#         template.globals[key] = value
+#
+#       # get all children that are not 'option'
+#       children_elements = code.xpath('*[not(self::option)]')
+#
+#       # get all children
+#       # children_elements = code.getchildren()
+#
+#       # render tags according to dictionary
+#       snippet = template.render(children=map(lambda x: serialise(x, parameters, keywords, language, filters), children_elements),
+#                                 childrenTags=map(
+#           lambda x: x.tag, children_elements),
+#           options=dict(zip(code.xpath('option/@name'), map(lambda x: serialise(x,
+#                                                                                parameters, keywords, language, filters), code.xpath('option')))),
+#           attributes=code.attrib,
+#           parentAttributes=code.getparent().attrib,
+#           parentTag=code.getparent().tag,
+#           text=text(code),
+#           tag=code.tag,
+#           parameters=parameters,
+#           code=code)
+#
+#       # save text in attribute
+#       code.attrib[language] = snippet
+#
+#     except TemplateError as e:
+#       # with Error.exception(parameters)
+#       logErrors(formatJinjaErrorMessage(e), parameters)
+#
+#   except KeyError:
+#     # get the line and column numbers
+#     line_number, column_number, line = positionToLineColumn(
+#         int(code.attrib['p']), parameters['text'])
+#
+#     # create error message
+#     logErrors(errorMessage('Language semantic', 'Keyword \'' + code.tag + '\' not defined',
+#                            line_number=line_number, column_number=column_number, line=line), parameters)
+#
+#   return snippet
 
 
 # -------------------------------------------------------------------------------------------------
@@ -972,9 +1080,11 @@ def CreateBracketGrammar(definitions):
   text = '\n# Bracket operators\n'
 
   for key, value in bracket.iteritems():
-    text += key + ' = \'' + value['bracket']['open'] + '\' wws ' + value['bracket']['arguments'] + \
+    text += key + ' = ( \'' + value['bracket']['open'] + '\' wws ' + value['bracket']['arguments'] + \
         ':a wws \'' + value['bracket']['close'] + \
-        '\' -> xml(\'' + key + '\',a,self.input.position)\n'
+        '\' -> xml(\'' + key + '\',a,self.input.position)\n      | \'' + value['bracket']['open'] + \
+        '\' wws \'' + value['bracket']['close'] + \
+        '\' -> xml(\'' + key + '\',\'\',self.input.position)\n      )\n'
 
   return text, bracket.keys()
 

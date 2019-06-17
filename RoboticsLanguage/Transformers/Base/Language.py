@@ -275,12 +275,6 @@ language = {
             'arguments': arguments('(real real | string string | element real | element string)'),
             'returns': returns('none')
         },
-        'input': {
-            'RoL': {
-                'infix': {'key': '=',
-                          'order': 100}
-            }
-        },
         'localisation':
         {
             'pt': 'atribuir'
@@ -415,6 +409,22 @@ language = {
         },
 
     },
+
+    'switch': {
+        'definition': {
+            'arguments': arguments('anything case*'),
+            'returns': returns('none')
+        },
+
+    },
+
+    'case': {
+        'definition': {
+            'arguments': arguments('boolean anything'),
+            'returns': returns('case')
+        },
+    },
+
 
     'part': {
         'definition': {
